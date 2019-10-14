@@ -30,9 +30,24 @@ trains_folds <- rsample::vfold_cv(
   strata = label
 )
 
+# I have a series of things I want to do before I tokenize the text. I plan to
+# work with the textrecipes team to add these directly as steps, but for now I'm
+# making a custome "tokenizer" function that will do all these steps and THEN
+# tokenize.
+clean_and_tokenize <- function(x) {
+  x %>%
+    textclean::replace_contraction() %>%
+    textclean::replace_time() %>%
+    textclean::replace_number() %>%
+    tokenizers::tokenize_words()
+}
+
 trains_recipe <- trains_train %>%
   recipes::recipe(label ~ sentence) %>%
-  textrecipes::step_tokenize(sentence) %>%
+  textrecipes::step_tokenize(
+    sentence,
+    custom_token = clean_and_tokenize
+  ) %>%
   textrecipes::step_stem(
     sentence,
     custom_stemmer = textstem::lemmatize_words
@@ -45,6 +60,11 @@ trains_recipe <- trains_train %>%
     # max_tokens = 100
   ) %>%
   textrecipes::step_tf(sentence)
+
+# Test your recipe to make sure it will work. Note that you'll need to set any
+# tune::tune()'ed parameters to a set value.
+# testing <- recipes::prep(trains_recipe, training = head(trains_train))
+# recipes::juice(testing)
 
 trains_model <- parsnip::boost_tree(
   mode = "classification",
@@ -63,7 +83,7 @@ trains_workflow <- tune::workflow() %>%
   tune::add_model(trains_model) %>%
   tune::add_recipe(trains_recipe)
 
-trains_parameter_set <- dials::param_set(trains_workflow) %>%
+trains_parameters <- dials::parameters(trains_workflow) %>%
   # I checked, and, when I wrote this, there were a total of 558 unique
   # non-stop-words in the data. Looking at most at the top-100 of those seems
   # fine, so let's not let it go above that.
@@ -80,28 +100,32 @@ trains_parameter_set <- dials::param_set(trains_workflow) %>%
 # cl <- makePSOCKcluster(all_cores)
 # registerDoParallel(cl)
 
-trains_grid <- dials::grid_latin_hypercube(trains_parameter_set, size = 30)
-saveRDS(trains_grid, "trains_grid.rds")
-
+set.seed(42)
+trains_grid <- dials::grid_latin_hypercube(trains_parameters, size = 30)
 trains_search_result <- tune::tune_grid(
   trains_workflow,
   rs = trains_folds,
   grid = trains_grid
-  # param_info = trains_parameter_set
+  # param_info = trains_parameters
   # initial = 5,
   # iter = 30,
   # perf = yardstick::metric_set(yardstick::roc_auc)
   # control = tune::Bayes_control(verbose = TRUE)
 )
+
+# set.seed(42)
+# trains_search_result <- tune::tune_Bayes(
+#   trains_workflow,
+#   rs = trains_folds,
+#   param_info = trains_parameters,
+#   initial = 5,
+#   iter = 30
+# )
 saveRDS(trains_search_result, "trains_search_result.rds")
 
 # parallel::stopCluster(cl)
 
-first_tune <- tune::estimate(trains_search_result) %>%
-  dplyr::arrange(desc(mean)) %>%
-  dplyr::slice(1)
-
-second_tune <- tune::estimate(trains_search_result) %>%
+best_tunes <- tune::estimate(trains_search_result) %>%
   dplyr::filter(.metric == "kap") %>%
   dplyr::arrange(desc(mean)) %>%
   dplyr::slice(1)
@@ -112,29 +136,30 @@ trains_model_tuned <- trains_model %>%
   # non-stop-words in the data. Looking at most at the top-100 of those seems
   # fine, so let's not let it go above that.
   update(
-    mtry = second_tune$mtry,
-    trees = second_tune$trees,
-    min_n = second_tune$min_n,
-    tree_depth = second_tune$tree_depth,
-    learn_rate = second_tune$learn_rate,
-    loss_reduction = second_tune$loss_reduction,
-    sample_size = second_tune$sample_size
+    mtry = best_tunes$mtry,
+    trees = best_tunes$trees,
+    min_n = best_tunes$min_n,
+    tree_depth = best_tunes$tree_depth,
+    learn_rate = best_tunes$learn_rate,
+    loss_reduction = best_tunes$loss_reduction,
+    sample_size = best_tunes$sample_size
   )
-trains_recipe_tuned <- trains_train %>%
-  recipes::recipe(label ~ sentence) %>%
-  textrecipes::step_tokenize(sentence) %>%
-  textrecipes::step_stem(
-    sentence,
-    custom_stemmer = textstem::lemmatize_words
-  ) %>%
-  textrecipes::step_stopwords(sentence) %>%
-  textrecipes::step_tokenfilter(
-    sentence,
-    max_tokens = second_tune$max_tokens
-  ) %>%
-  textrecipes::step_tf(sentence)
-trains_recipe_prepped <- recipes::prep(trains_recipe_tuned, training = trains_train)
+# For now, to update a recipe, I need to make sure I get the right step number.
+trains_recipe_tuned <- trains_recipe
+trains_recipe_tuned$steps
+summary(trains_recipe_tuned$steps[[4]])
+trains_recipe_tuned$steps[[4]] <- update(
+  trains_recipe_tuned$steps[[4]],
+  max_tokens = best_tunes$max_tokens
+)
+
+trains_recipe_prepped <- recipes::prep(
+  trains_recipe_tuned,
+  training = trains_train
+)
 trains_train_juiced <- recipes::juice(trains_recipe_prepped)
+
+set.seed(42)
 trains_fit <- parsnip::fit(
   trains_model_tuned,
   label ~ .,
@@ -178,8 +203,6 @@ yardstick::conf_mat(
 
 # With Trains -------------------------------------------------------------
 
-trains_mentions_trains
-
 trains_test_baked_mentions_trains <- recipes::bake(
   trains_recipe_prepped,
   new_data = trains_mentions_trains
@@ -212,3 +235,4 @@ yardstick::conf_mat(
   truth = label,
   estimate = prediction
 )
+

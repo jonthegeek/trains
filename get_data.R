@@ -7,6 +7,8 @@ library(tidyr)
 trains_data <- googlesheets4::sheets_read(
   "1CIGEFtize7CFhfygVfeHyQ1vZyLGY7xFFo_A9XWVfy4"
 ) %>%
+  # For the moment I'm just using the first rows for demo purposes.
+  head(50) %>%
   dplyr::select(
     "learning_no_train" = `A single sentence about learning, WITHOUT using the word "train" (nor "trained", "training", etc).`,
     "travel_no_train" = `A single sentence about travel, WITHOUT using the word "train" (as in the vehicle).`,
@@ -49,7 +51,12 @@ trains_data <- googlesheets4::sheets_read(
 # apostrophe miscoded on Windows. Added fix for that above.
 
 # nonUTF <- iconv(
-#   trains_data$travel_train, from="UTF-8", to="ASCII"
+#   trains_data$sentence, from="UTF-8", to="ASCII"
 # )
-# trains_data$travel_train[is.na(nonUTF)]
-
+# trains_data$sentence[is.na(nonUTF)]
+#
+# textclean::check_text(trains_data$sentence)
+#
+# replace_contraction
+# replace_number
+# hunspell::hunspell_find & hunspell::hunspell_suggest
